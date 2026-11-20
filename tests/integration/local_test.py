@@ -64,13 +64,12 @@ def main():
             subprocess.run(['docker', 'exec', hostname, '/usr/bin/sudo', '-u', 'kestra-audit', '/usr/bin/sudo', '-n',
                             '/usr/local/libexec/kestra-audit-root', 'inventory-v1'],
                            stdout=subprocess.DEVNULL, check=True)
-            docker('create', '--name', runner, '--network', network,
-                   '--entrypoint', 'python', 'pcic/swarm-software-audit:local', '/integration/check.py')
+            docker('run', '-d', '--name', runner, '--network', network, '--user', '1111:1111',
+                   '--entrypoint', 'sleep', 'pcic/swarm-software-audit:local', '3600')
             docker('cp', str(REPO / 'tests/integration'), runner + ':/integration')
             docker('cp', str(work), runner + ':/test')
-            subprocess.run(['docker', 'start', '--attach', runner], check=True)
-            if docker('inspect', '--format', '{{.State.ExitCode}}', runner) != '0':
-                raise RuntimeError('local runner failed')
+            docker('exec', '--user', '0', runner, 'chown', '-R', '1111:1111', '/test')
+            subprocess.run(['docker', 'exec', runner, 'python', '/integration/check.py'], check=True)
             assert docker('exec', hostname, 'ls', '-A', workspace) == '', 'scan workspace leaked'
             # Save only the HTML artifact; never copy the generated test key into the repo.
             report = REPO / 'tests/integration/preview.html'

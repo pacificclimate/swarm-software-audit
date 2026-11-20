@@ -1,6 +1,8 @@
 """Run inside the local runner on the disposable SSH-host network."""
 import importlib.util
 import json
+import os
+import pwd
 from pathlib import Path
 import subprocess
 import tempfile
@@ -8,6 +10,8 @@ import tempfile
 spec = importlib.util.spec_from_file_location('audit', '/opt/swarm-software-audit/audit.py')
 audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
+assert os.getuid() == 1111 and os.getgid() == 1111, 'runner must match Kestra UID:GID'
+assert pwd.getpwuid(os.getuid()).pw_name == 'audit', 'OpenSSH requires a passwd entry'
 key, known = Path('/test/key'), Path('/test/known_hosts')
 node = {'cluster': 'local-test', 'name': 'fixture', 'host': 'audit-test-host'}
 identity = Path('/test/image-id').read_text().strip()
@@ -62,5 +66,5 @@ summary = {'run_id': '20261119T000000Z-aaaaaaaa', 'started_at': audit.now(), 'fi
 audit.publish(root, summary, records, images)
 assert (root / 'published/index.html').exists()
 print(json.dumps({'result': 'passed', 'packages': len(sbom['artifacts']), 'matches': summary['unique_matches'],
-                  'checks': ['real restricted SSH', 'stopped-container association', 'local Syft container',
+                  'checks': ['runner UID:GID 1111:1111', 'real restricted SSH', 'stopped-container association', 'local Syft container',
                              'raw-config redaction', 'SBOM cache', 'Grype DB update', 'Grype scan/cache', 'HTML publication']}))

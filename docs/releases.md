@@ -17,8 +17,8 @@ Update [release notes](../CHANGELOG.md), then, after CI passes on `main`, publis
 the next version (for example):
 
 ```bash
-git tag -a 0.1.1 -m "0.1.1"
-git push origin 0.1.1
+git tag -a 0.1.2 -m "0.1.2"
+git push origin 0.1.2
 ```
 
 Each GitHub release includes `host.py`, `dispatch.py`, `LICENSE` and `SHA256SUMS`.
@@ -32,7 +32,7 @@ To rebuild the image for the **same source version**, rerun its Docker publishin
 job or manually dispatch that workflow at the existing tag:
 
 ```bash
-gh workflow run docker-publish.yml --ref 0.1.0
+gh workflow run docker-publish.yml --ref 0.1.2
 ```
 
 Manual dispatch disables the build cache, allowing OS package installation to run

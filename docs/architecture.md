@@ -62,6 +62,11 @@ its publisher. Protect release/tag permissions, review helper changes and deploy
 only trusted versions. Keep raw SBOMs/findings private: package metadata can reveal
 application details.
 
+The runner image defines a non-login `audit` account with UID:GID `1111:1111`.
+OpenSSH requires a passwd entry for the container process UID. Builds for another
+storage identity can set `AUDIT_UID` and `AUDIT_GID`; the runtime user and output
+ownership must match those IDs.
+
 The runner verifies SSH host keys and copies the provided private key into a
 temporary mode-0600 file. Grype requires outbound HTTPS for DB updates; Syft scans
 require no registry access after provisioning has pre-pulled its pinned image.

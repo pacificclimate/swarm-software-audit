@@ -23,16 +23,19 @@ Production keys, site configuration and reports are excluded from this repositor
 
 ## Run
 
+The image contains the `audit` account with UID:GID `1111:1111`. The output
+directory must be writable by that identity.
+
 Copy `examples/targets.json` to `config/targets.json` and replace the example hosts.
 Put verified host keys in `config/known_hosts` and the private key in
 `config/id_ed25519`.
 
 ```bash
 mkdir -p audit-output
-docker run --rm --user "$(id -u):$(id -g)" \
+docker run --rm --user 1111:1111 \
   --mount "type=bind,source=$PWD/config,target=/config,readonly" \
   --mount "type=bind,source=$PWD/audit-output,target=/audit" \
-  pcic/swarm-software-audit:0.1.0 \
+  pcic/swarm-software-audit:0.1.2 \
   --targets /config/targets.json --known-hosts /config/known_hosts \
   --key /config/id_ed25519 --root /audit
 ```
