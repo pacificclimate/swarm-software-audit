@@ -1,0 +1,16 @@
+# Disposable LOCAL test host only. This is never deployed to the Swarms.
+FROM pcic/swarm-software-audit:local
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server sudo docker.io python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r -g 1111 kestra-audit \
+    && useradd -r -u 1111 -g kestra-audit -d /var/empty/kestra-audit -s /bin/sh kestra-audit \
+    && mkdir -p /run/sshd /var/empty/kestra-audit/.ssh /etc/kestra-audit/docker \
+    && chmod 755 /var/empty /var/empty/kestra-audit /var/empty/kestra-audit/.ssh
+COPY host/host.py /usr/local/libexec/kestra-audit-root
+COPY host/dispatch.py /usr/local/libexec/kestra-audit-dispatch
+RUN chmod 755 /usr/local/libexec/kestra-audit-* \
+    && printf '%s\n' 'kestra-audit ALL=(root) NOPASSWD: /usr/local/libexec/kestra-audit-root inventory-v1, /usr/local/libexec/kestra-audit-root sbom-v1' > /etc/sudoers.d/kestra-audit \
+    && chmod 440 /etc/sudoers.d/kestra-audit \
+    && visudo -cf /etc/sudoers.d/kestra-audit
+ENTRYPOINT []
+CMD ["/usr/sbin/sshd", "-D", "-e"]

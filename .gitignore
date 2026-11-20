@@ -221,3 +221,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local audit inputs and results
+/targets.json
+/known_hosts
+/audit-vars.yaml
+/audit-output/
+/tests/integration/preview.html
+*.key
+/config/

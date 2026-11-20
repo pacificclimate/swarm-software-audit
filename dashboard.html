@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Swarm software audit</title>
+<style>
+:root{font:16px system-ui,sans-serif;color:#183044;background:#f3f6f8}body{max-width:1500px;margin:0 auto;padding:2rem}h1{margin-bottom:.4rem}a{color:#075c85}.muted{color:#516474}.cards{display:flex;flex-wrap:wrap;gap:1rem;margin:1.5rem 0}.card{background:white;padding:1rem 1.4rem;border:1px solid #d5dfe6;border-radius:8px}.card strong{font-size:1.7rem;display:block}.warning{background:#fff0ce;border-left:5px solid #b65b00;padding:1rem}.success{background:#deeee7;border-left:5px solid #187149;padding:1rem}.filters{display:flex;flex-wrap:wrap;gap:.8rem;margin:1rem 0}input,select,button{font:inherit;padding:.5rem;border:1px solid #a9bac7;border-radius:4px}input{min-width:280px}label{display:flex;flex-direction:column;font-size:.85rem;gap:.3rem}.scroll{overflow:auto;background:white}table{border-collapse:collapse;width:100%;font-size:.85rem}th,td{padding:.65rem;text-align:left;border-bottom:1px solid #dce5eb;vertical-align:top}th{background:#e7eef3}td{max-width:320px;overflow-wrap:anywhere}.Critical,.High{color:#a51d22;font-weight:bold}.Medium{color:#8e5600}.Low{color:#14663b}.Unknown{color:#7345a1}details{margin:1rem 0}pre{white-space:pre-wrap;font-size:.8rem}.pager{display:flex;align-items:center;gap:1rem;margin:1rem 0}
+</style></head><body>
+<h1>Software inventory &amp; vulnerabilities</h1>
+<p class="muted">Docker images across configured Swarms · Includes undeployed images · Host packages, mounted data and container filesystem changes are outside this assessment.</p>
+<p><a href="AUDIT_LAST_SUCCESSFUL_URL">Last successful assessment</a></p>
+<div id="status"></div><div id="cards" class="cards"></div>
+<details><summary>Coverage and assessment details</summary><div id="coverage"></div><pre id="provenance"></pre></details>
+<div class="filters"><label>Search image, package, vulnerability or service<input id="search" type="search" placeholder="e.g. nginx, CVE-…, sha256:…"></label>
+<label>Cluster<select id="cluster"></select></label><label>Node<select id="node"></select></label><label>Service<select id="service"></select></label><label>Severity<select id="severity"></select></label><label>Fix available<select id="fix"><option value="">All</option><option value="yes">Yes</option><option value="no">No</option></select></label></div>
+<p id="count"></p><div class="scroll"><table><thead><tr><th>Cluster / node</th><th>Service / state</th><th>Image</th><th>Severity</th><th>Vulnerability</th><th>Package / version</th><th>Fixed in</th><th>Scan</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="pager"><button id="previous">Previous</button><span id="page"></span><button id="next">Next</button></div>
+<p class="muted">Finding rows repeat across affected nodes and services. “Unique package matches” counts scanner matches once per scanned image. A successful scan with no matches is distinct from an unavailable assessment.</p>
+<script id="audit-data" type="application/json">AUDIT_DATA_PLACEHOLDER</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('audit-data').textContent),s=data.summary;
+const el=id=>document.getElementById(id);
+function text(tag,value,parent){const n=document.createElement(tag);n.textContent=value;parent.appendChild(n);return n;}
+el('status').className=s.complete?'success':'warning';
+text('strong',s.complete?'Assessment complete':'Assessment incomplete',el('status'));
+text('p',`Collected ${s.started_at}; finished ${s.finished_at}.`,el('status'));
+for(const problem of s.problems)text('p',problem,el('status'));
+for(const [value,label]of [[`${s.nodes_ok}/${s.nodes_total}`,'Nodes collected'],[`${s.images_scanned}/${s.images_total}`,'Images assessed'],[s.unique_matches,'Unique package matches'],[s.sbom_cache_hits,'SBOM cache hits']]){const card=document.createElement('div');card.className='card';text('strong',value,card);text('span',label,card);el('cards').appendChild(card);}
+for(const node of data.nodes)text('p',`${node.cluster} / ${node.name} (${node.host}): ${node.status}${node.error?' — '+node.error:''}`,el('coverage'));
+el('provenance').textContent=JSON.stringify({run:s.run_id,database:s.database||'Unavailable'},null,2);
+for(const field of ['cluster','node','service','severity']){const select=el(field);const option=document.createElement('option');option.value='';option.textContent='All';select.appendChild(option);for(const value of [...new Set(data.rows.map(r=>r[field]))].sort()){const o=document.createElement('option');o.value=value;o.textContent=value;select.appendChild(o);}}
+const rank={Critical:0,High:1,Medium:2,Low:3,Negligible:4,Unknown:5,None:6};
+const rows=data.rows.sort((a,b)=>(rank[a.severity]??5)-(rank[b.severity]??5));let page=0;const pageSize=100;
+function render(){const query=el('search').value.toLowerCase();const filtered=rows.filter(r=>['cluster','node','service','severity'].every(f=>!el(f).value||r[f]===el(f).value)&&(!el('fix').value||(el('fix').value==='yes')===Boolean(r.fix))&&(!query||[r.cluster,r.node,r.service,r.image_id,...r.tags,r.vulnerability,r.package,r.version].join(' ').toLowerCase().includes(query)));
+const pages=Math.max(1,Math.ceil(filtered.length/pageSize));page=Math.min(page,pages-1);el('rows').replaceChildren();
+for(const r of filtered.slice(page*pageSize,(page+1)*pageSize)){const tr=document.createElement('tr');text('td',`${r.cluster} / ${r.node}`,tr);text('td',`${r.service} / ${r.state}`,tr);const image=text('td',r.tags.join(', ')||'(untagged)',tr);text('div',r.image_id,image);const sev=text('td',r.severity,tr);sev.className=Object.hasOwn(rank,r.severity)?r.severity:'Unknown';text('td',r.vulnerability||'—',tr);text('td',[r.package,r.version].filter(Boolean).join(' ')||'—',tr);text('td',r.fix||'—',tr);text('td',r.scan_status==='ok'?`Assessed ${r.scanned_at}`:'Unavailable',tr);el('rows').appendChild(tr);}
+el('count').textContent=`${filtered.length} association rows match the filters.`;el('page').textContent=`Page ${page+1} of ${pages}`;el('previous').disabled=page===0;el('next').disabled=page===pages-1;}
+for(const field of ['search','cluster','node','service','severity','fix'])el(field).addEventListener('input',()=>{page=0;render();});el('previous').onclick=()=>{page--;render();};el('next').onclick=()=>{page++;render();};render();
+</script></body></html>
