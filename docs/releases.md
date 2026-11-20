@@ -4,35 +4,29 @@ The workflows have separate purposes:
 
 - `docker-publish.yml`: tests on PRs, main, numeric tags and manual runs; image
   publishing depends on tests and is skipped for PRs.
-- `helper-release.yml`: tests and checksummed helper assets for new numeric tags.
+- `helper-release.yml`: tests and checksummed helper assets for numeric tags;
+  can also run manually with a `release_tag` input.
 
 Pushes to `main` publish `main` and `latest` after unit tests pass. Other branch
-pushes do not publish images automatically. Tags such as `0.1.0` publish the versioned image and matching GitHub helper
-release. Release tags do not use a `v` prefix. Wait for both publishing workflows before
-provisioning a new release, and pin the deployment image digest.
+pushes do not publish images automatically. Numeric tags publish the versioned
+image and matching GitHub helper release. Release tags do not use a `v` prefix.
+Wait for both publishing workflows before provisioning a new release, and pin
+the deployment image digest.
 
-Allow this repository to access the existing organization Actions secrets, or
-create repository secrets with these names:
-
-- `pcicdevops_at_dockerhub_username`
-- `pcicdevops_at_dockerhub_password` (a Docker Hub access token with push access)
-
-Configure the Docker Hub repository as public before release. Never put credentials
-in workflow YAML. The workflow uses a scoped GitHub token to create release assets;
-it does not require a personal GitHub token.
-
-After CI passes on `main`, publish a new version:
+Update [release notes](../CHANGELOG.md), then, after CI passes on `main`, publish
+the next version (for example):
 
 ```bash
-git tag 0.1.0
-git push origin 0.1.0
+git tag -a 0.1.1 -m "0.1.1"
+git push origin 0.1.1
 ```
 
 Each GitHub release includes `host.py`, `dispatch.py`, `LICENSE` and `SHA256SUMS`.
 Deployment automation downloads helpers from that tag and verifies the checksums.
 The Docker publishing job summary shows the image digest; pin it in deployment
-configuration. Do not overwrite source tags or helper assets: changed application
-or helper source needs a new version.
+configuration. Changed source needs a new version. Manual helper releases check
+out the requested tag and can upload assets to an existing release; existing
+assets are never overwritten.
 
 To rebuild the image for the **same source version**, rerun its Docker publishing
 job or manually dispatch that workflow at the existing tag:

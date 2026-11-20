@@ -25,7 +25,7 @@ Production keys, site configuration and reports are excluded from this repositor
 
 Copy `examples/targets.json` to `config/targets.json` and replace the example hosts.
 Put verified host keys in `config/known_hosts` and the private key in
-`config/id_ed25519`. Install the matching helpers before running collection.
+`config/id_ed25519`.
 
 ```bash
 mkdir -p audit-output
