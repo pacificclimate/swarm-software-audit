@@ -1,6 +1,0 @@
-{
-  "nodes": [
-    {"cluster": "primary", "name": "node-a", "host": "node-a.example.org", "port": 22},
-    {"cluster": "secondary", "name": "node-b", "host": "node-b.example.org", "port": 22}
-  ]
-}

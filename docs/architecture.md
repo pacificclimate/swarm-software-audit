@@ -1,94 +1,64 @@
-# Architecture and helper security
+# Registry scanning
 
-The runner collects image and container metadata through restricted SSH helpers.
-SBOMs are deduplicated centrally; Grype scans use a database snapshot per run.
-Images remain on their source nodes, and Swarms can use separate storage.
+The input is an inventory of immutable registry image references and platform,
+optionally associated with services. Syft explicitly uses its registry source,
+which verifies registry content by digest, with TLS verification enabled.
 
-## Host protocol and trust boundary
+The runner bundles Syft and Grype, uses standard-library Python, and runs as the
+non-root `audit` account. It downloads images from registries and vulnerability
+data from Grype's database service. It writes reports and caches under the path
+passed to `--root` (`/audit` in the container examples).
 
-An SSH account named `kestra-audit` accepts exactly:
+For private images, provide registry download credentials in a Docker authentication
+`config.json` file. Mount it read-only and set `DOCKER_CONFIG` to its directory.
 
-| Command | Input | Result |
-|---|---|---|
-| `audit inventory-v1` | None | Selected image/container metadata and scanner identity |
-| `audit sbom-v1` | One JSON object with a full `image_id` | Syft JSON for that existing image |
+## Inventory and identity
 
-The application assumes these installed paths:
+`examples/images.json` defines the input format. Image references must include the
+registry and a full SHA256 digest. An OCI index
+reference is assessed for the explicitly selected platform, default `linux/amd64`.
+The SBOM records the input reference and platform alongside Syft's configuration ID.
 
-- Root-owned `/usr/local/libexec/kestra-audit-root`, from `host/host.py`.
-- Root-owned `/usr/local/libexec/kestra-audit-dispatch`, from `host/dispatch.py`.
-- Root-owned `/etc/kestra-audit/config.json` selecting a digest-pinned scanner,
-  e.g. `{"syft_image":"anchore/syft@sha256:<verified digest>",
-  "workspace_root":"/storage/audit/work/node-a",
-  "workspace_uid":1111,"workspace_gid":1111,"workspace_mount":"/storage"}`.
-  Workspace IDs are site configuration; the UID/GID must match storage ownership.
-- A dedicated empty Docker client config directory `/etc/kestra-audit/docker`.
+Service metadata comes from the supplied inventory.
+Use `source` and optionally `observed_at` to identify its origin. Deployment files
+establish declared state; only an observed inventory should label a service running.
+A Portainer exporter remains deployment integration work; it would generate this
+file using selected image and service fields.
 
-Provisioning must enforce a locked password, a root-managed authorized-key file,
-`restrict` and a forced dispatcher, verified source restrictions, no supplementary
-Docker group, and sudo limited to the two fixed helper invocations. No SSH shell,
-SFTP/SCP, arbitrary Docker commands, scanner image selection or custom mounts are
-accepted. Do not execute a group-writable checkout as the privileged helper.
+Routing categories describe Traefik configuration, direct published ports, no
+observed route, or unknown, according to the supplied inventory. Vulnerability
+findings are package/advisory matches for the listed images and platform.
 
-Only the small root helper accesses Docker. It saves the selected image to a
-private archive workspace and runs Syft as the configured workspace UID:GID with
-**no Docker socket**. Filesystem operations and cleanup use that storage identity;
-only fixed Docker CLI children regain effective root. Syft receives the archive
-read-only and private writable scratch, with no network, dropped capabilities,
-a read-only root filesystem and CPU/memory/PID limits. SELinux labeling is disabled
-for this scanner container to avoid relabeling NFS mounts; see
-[Docker security options](https://docs.docker.com/reference/cli/docker/container/run/#security-opt).
-A single 15-minute deadline covers export and scanning. The helper removes the
-scanner, archive and scratch afterward, including on normal failures.
-Raw image config/manifest metadata is removed from returned SBOMs.
+## Cache and publication
 
-Provision a mode-0700 workspace owned by `workspace_uid:workspace_gid`. Shared
-NFS storage is supported, including root squash. Use a separate directory per
-node; each scan creates and removes a unique subdirectory. The helper and Docker
-daemon must see the same absolute workspace path. `workspace_mount`, when set,
-requires that mount to be present before any scan, preventing local-disk fallback.
+SBOM cache identity includes reference, platform, Syft version and catalog policy.
+The catalog policy is `registry-v1`. Syft's raw image configuration/manifest
+metadata is removed before caching. Private SBOMs and
+findings can still reveal application details.
 
-`max_archive_bytes` (default 20 GiB) and `min_free_bytes` (default 1 GiB) are integer
-byte counts. The helper checks capacity for approximately two uncompressed image
-copies plus reserve, bounds archive/SBOM output, and monitors free space. These
-checks are not a filesystem quota. Archives stay within the source Swarm's storage;
-only SBOMs are returned over SSH.
+Grype updates its database once per run, then scans a private snapshot. Findings
+cache identity includes the SBOM content hash, Grype version, database hash and
+scan policy. Invalid caches are regenerated. Used objects are retained; unused
+objects expire after the configured retention period.
 
-The helper requires privileged Docker access. Release permissions and helper
-updates require review.
-The account cannot change its root-owned code or config. Checksums detect corrupted
-assets; a manifest downloaded from the same release does not independently verify
-its publisher. Protect release/tag permissions, review helper changes and deploy
-only trusted versions. Keep raw SBOMs/findings private: package metadata can reveal
-application details.
+Only selected package and advisory fields are embedded in HTML, once per image.
+Service associations are separate. Both tabs group by package identity/version or
+image; filters apply before grouping. Expanded details preserve advisory namespace,
+affected ranges, fixes and service associations. Different package URLs and
+ecosystems stay distinct. JSON embedding and text rendering escape untrusted data;
+advisory links allow only HTTP(S).
 
-The runner image defines a non-login `audit` account with UID:GID `1111:1111`.
-OpenSSH requires a passwd entry for the container process UID. Builds for another
-storage identity can set `AUDIT_UID` and `AUDIT_GID`; the runtime user and output
-ownership must match those IDs.
+A failed assessment publishes an incomplete latest attempt without replacing the
+last complete page. Only `published/` is intended to be served. Keep reports internal.
 
-The runner verifies SSH host keys and copies the provided private key into a
-temporary mode-0600 file. Grype requires outbound HTTPS for DB updates; Syft scans
-require no registry access after provisioning has pre-pulled its pinned image.
+## Scheduling and recovery
 
+The scanner can run from reviewed CI, a host-managed schedule, or a restricted
+Kestra flow. Deployment administrators control flow-edit permissions, runtime
+users and permitted mounts. Limit writable mounts to the audit output directory.
 
-## Cache policy
+Runs are serialized using `.run-lock/`. After an abrupt termination, confirm no
+runner remains before removing that specific stale lock. Retention removes recognized audit
+history directories and unused cache objects.
 
-The node helper's `local-archive-v2` profile must change if cataloging policy changes,
-so existing SBOMs are invalidated. A Syft image digest change also invalidates SBOM
-cache entries. Findings cache identity includes SBOM hash, Grype version, DB hash
-and scan policy. Invalid findings caches are regenerated with Grype. Used cache
-objects are retained; unused objects expire after the configured retention period.
-
-
-## Recovery
-
-A killed runner can leave `.run-lock/owner.json` under the output root. Confirm no
-runner remains before removing that specific stale lock. Locks are not stolen
-automatically. Normal helper timeout paths remove their scanner container; inspect
-and clean up orphaned `kestra-audit-*` containers only after verifying ownership.
-
-
-See the [README](../README.md) for usage and the
-[deployment runbook](https://github.com/pacificclimate/portainer-deployment/blob/main/apps/live/kestra/software-audit.md)
-for installation and site configuration.
+See the [deployment handoff](deployment-handoff.md) for migration tasks.

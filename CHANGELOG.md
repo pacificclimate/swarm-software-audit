@@ -1,6 +1,19 @@
 # Release notes
 
-## 0.1.2 (unreleased)
+## 0.2.0
+
+- Replace node SSH collection with Syft registry scanning of digest-pinned images
+  and explicit platforms. Bundle Syft and Grype in a non-root runner.
+- Remove privileged host helpers, SSH credentials, node workspaces and helper
+  release assets from the pipeline. Input is now `--images` registry inventory.
+- Preserve the grouped Vulnerabilities / Packages dashboard, service-routing
+  filters, affected ranges, advisory links and private caches.
+- Treat service state/routing as supplied inventory, with declared state distinct
+  from observed running services. Store findings and packages once per image.
+- Add deployment handoff notes for retiring the old SSH provisioning and reviewing
+  Kestra's mount and edit permissions.
+
+## 0.1.2
 
 - Add a named `audit` account (UID:GID `1111:1111`) so OpenSSH works when the
   runner uses that storage identity. Custom builds can set `AUDIT_UID` and

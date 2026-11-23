@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Sequential SSH collection, content-addressed SBOM cache, Grype, static report."""
+"""Scan digest-pinned registry images with Syft and Grype; publish a static report."""
 import argparse
-from collections import defaultdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -41,106 +40,119 @@ def read_json(path):
     return json.loads(Path(path).read_text())
 
 
-def validate_nodes(config):
-    nodes = config['nodes']
-    if not nodes:
-        raise ValueError('no targets configured')
-    seen = set()
-    for node in nodes:
-        for field in ('name', 'cluster', 'host'):
-            if not isinstance(node[field], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', node[field]):
-                raise ValueError('invalid node ' + field)
-        if not isinstance(node.get('port', 22), int) or not 1 <= node.get('port', 22) <= 65535:
-            raise ValueError('invalid SSH port')
-        if (node['cluster'], node['name']) in seen:
-            raise ValueError('duplicate target')
-        seen.add((node['cluster'], node['name']))
-    return nodes
+ROUTING = {'traefik': 'Traefik configured', 'published-ports': 'Published ports',
+           'none': 'No route observed', 'unknown': 'Unknown'}
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
+PLATFORM = re.compile(r'[a-z0-9]+/[a-z0-9]+(?:/[a-z0-9_.-]+)?\Z')
+REFERENCE = re.compile(r'(?P<registry>[a-z0-9][a-z0-9.-]*(?::[0-9]+)?)/'
+                       r'[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?:/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*'
+                       r'(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?'
+                       r'@sha256:[0-9a-f]{64}\Z')
 
 
-def ssh(node, operation, key, known_hosts, payload=None):
-    command = ['ssh', '-F', '/dev/null', '-T', '-i', str(key), '-p', str(node.get('port', 22)),
-               '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
-               '-o', 'UserKnownHostsFile=' + str(known_hosts), '-o', 'GlobalKnownHostsFile=/dev/null',
-               '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
-               'kestra-audit@' + node['host'], 'audit ' + operation]
-    # Bound memory use: large SBOM output is spooled to a local private file.
-    with tempfile.TemporaryFile() as output:
-        subprocess.run(command, input=json.dumps(payload).encode() if payload else b'',
-                       stdout=output, stderr=subprocess.PIPE, check=True,
-                       timeout=1000 if payload else 300)
-        if output.tell() > 256 * 1024 * 1024:
-            raise ValueError('response exceeds 256 MiB')
-        output.seek(0)
-        return json.load(output)
+def validate_inventory(config):
+    targets, seen = [], set()
+    for entry in config['images']:
+        reference, platform = entry['reference'], entry.get('platform', 'linux/amd64')
+        match = REFERENCE.fullmatch(reference) if isinstance(reference, str) else None
+        if not match or not any(c in match['registry'] for c in '.:') and match['registry'] != 'localhost':
+            raise ValueError('expected a fully qualified registry image pinned by sha256 digest')
+        if not isinstance(platform, str) or not PLATFORM.fullmatch(platform):
+            raise ValueError('invalid image platform')
+        if (reference, platform) in seen:
+            raise ValueError('duplicate image and platform; combine their services in one entry')
+        seen.add((reference, platform))
+        services = entry.get('services') or [dict(cluster='unassigned', name='unassigned')]
+        selected = []
+        for service in services:
+            if any(not isinstance(service.get(field), str) or not NAME.fullmatch(service[field])
+                   for field in ('cluster', 'name')):
+                raise ValueError('invalid service cluster or name')
+            state, routing = service.get('state', 'declared'), service.get('routing', 'unknown')
+            if state not in {'declared', 'running', 'stopped'} or routing not in ROUTING:
+                raise ValueError('invalid service state or routing')
+            selected.append(dict(cluster=service['cluster'], service=service['name'], state=state,
+                                 routing=ROUTING[routing]))
+        targets.append(dict(reference=reference, platform=platform, services=selected))
+    if not targets:
+        raise ValueError('no registry images configured')
+    return targets
 
 
-def image_key(image, scanner):
-    if not IMAGE_ID.fullmatch(image['id']):
-        raise ValueError('invalid image ID')
-    return digest({'image_id': image['id'], 'os': image['os'], 'architecture': image['architecture'],
-                   'variant': image.get('variant', ''), 'layers': image.get('layers', []), 'scanner': scanner})
+def validate_sbom(sbom):
+    if not isinstance(sbom, dict) or not isinstance(sbom.get('artifacts'), list):
+        raise ValueError('invalid image SBOM')
+    source = sbom.get('source')
+    if not isinstance(source, dict) or source.get('type') != 'image' or not isinstance(source.get('metadata'), dict):
+        raise ValueError('invalid image SBOM')
+    identity = source['metadata'].get('imageID')
+    if not isinstance(identity, str) or not IMAGE_ID.fullmatch(identity):
+        raise ValueError('SBOM configuration identity missing')
 
 
-def validate_sbom(sbom, identity):
-    if not isinstance(sbom.get('artifacts'), list):
-        raise ValueError('invalid Syft SBOM')
-    if sbom.get('source', {}).get('metadata', {}).get('imageID') != identity:
-        raise ValueError('SBOM image mismatch')
+def registry_sbom(target, work):
+    # Explicit registry source prevents Docker-daemon or filesystem fallback.
+    output = work / 'catalog.sbom.json'
+    environment = dict(os.environ, SYFT_CHECK_FOR_APP_UPDATE='false',
+                       SYFT_REGISTRY_INSECURE_SKIP_TLS_VERIFY='false', SYFT_REGISTRY_INSECURE_USE_HTTP='false')
+    with output.open('wb') as stream:
+        subprocess.run(['syft', 'scan', 'registry:' + target['reference'],
+                        '--platform=' + target['platform'], '--scope=squashed', '-o', 'syft-json'],
+                       env=environment, stdout=stream, stderr=subprocess.PIPE, check=True, timeout=900)
+    if output.stat().st_size > 256 * 1024 * 1024:
+        raise ValueError('SBOM exceeds 256 MiB')
+    value = read_json(output)
+    validate_sbom(value)
+    metadata = value['source']['metadata']
+    # Image configuration can contain baked-in environment values.
+    for key in list(metadata):
+        if key not in {'imageID', 'manifestDigest', 'mediaType', 'tags', 'size', 'layers',
+                       'repoDigests', 'architecture', 'os', 'variant'}:
+            del metadata[key]
+    return value
 
 
-def collect(nodes, root, key, known_hosts, remote=ssh, inventory_only=False):
-    records, problems = [], []
-    groups = defaultdict(list)
-    for node in nodes:
-        record = dict(node, status='failed')
-        records.append(record)
-        try:
-            value = remote(node, 'inventory-v1', key, known_hosts)
-            if value['schema'] != 1 or not isinstance(value['containers'], list):
-                raise ValueError('unsupported inventory schema')
-            # Validate everything before accepting any image from this node.
-            entries = [(image_key(image, value['scanner']), image) for image in value['images']]
-            record.update(status='ok', inventory=value)
-            for cache_key, image in entries:
-                groups[cache_key].append((node, image, value['scanner']))
-        except Exception as error:
-            record['error'] = type(error).__name__
-            problems.append(node['name'] + ': inventory failed (' + type(error).__name__ + ')')
-    images = []
-    for cache_key, candidates in sorted(groups.items()):
-        node, image, scanner = candidates[0]
-        result = {'key': cache_key, 'image': image, 'scanner': scanner, 'status': 'failed',
-                  'locations': [{'cluster': n['cluster'], 'node': n['name'], 'tags': i['tags']}
-                                for n, i, _ in candidates]}
+def collect(targets, root, work, catalog=registry_sbom):
+    images, problems = [], []
+    try:
+        version = json.loads(subprocess.check_output(['syft', 'version', '-o', 'json'], timeout=30))
+        scanner = {'syft': version, 'scope': 'squashed', 'profile': 'registry-v1'}
+        scanner_error = None
+    except Exception as error:
+        scanner, scanner_error = {}, type(error).__name__
+    for target in targets:
+        key = digest(dict(reference=target['reference'], platform=target['platform'], scanner=scanner))
+        result = dict(key=key, image={'id': target['reference'].split('@')[1]},
+                      reference=target['reference'], platform=target['platform'], scanner=scanner,
+                      services=target['services'], status='failed')
         images.append(result)
-        if inventory_only:
-            result['status'] = 'skipped'
+        if scanner_error:
+            problems.append(target['reference'] + ': Syft unavailable (' + scanner_error + ')')
             continue
-        cache = root / 'cache' / 'sboms' / (cache_key + '.json')
+        cache = root / 'cache' / 'sboms' / (key + '.json')
         try:
             cached = read_json(cache)
-            validate_sbom(cached['sbom'], image['id'])
-            if cached['scanner'] != scanner:
-                raise ValueError('scanner cache mismatch')
+            if (cached['reference'] != target['reference'] or cached['platform'] != target['platform']
+                    or cached['scanner'] != scanner):
+                raise ValueError('SBOM cache request mismatch')
+            validate_sbom(cached['sbom'])
             result.update(status='ok', sbom=cache, cataloged_at=cached['cataloged_at'], cached=True)
+            cache.touch()
             continue
         except (OSError, ValueError, KeyError, TypeError):
             pass
-        # Retry another holder if an image disappears or a node fails mid-run.
-        for holder, candidate, _ in candidates:
-            try:
-                value = remote(holder, 'sbom-v1', key, known_hosts, {'image_id': candidate['id']})
-                validate_sbom(value, image['id'])
-                stamp = now()
-                atomic_json(cache, {'scanner': scanner, 'cataloged_at': stamp, 'sbom': value})
-                result.update(status='ok', sbom=cache, cataloged_at=stamp, cached=False)
-                break
-            except Exception as error:
-                result['error'] = type(error).__name__
-        if result['status'] != 'ok':
-            problems.append(image['id'] + ': SBOM generation failed')
-    return records, images, problems
+        try:
+            value = catalog(target, work)
+            validate_sbom(value)
+            stamp = now()
+            atomic_json(cache, dict(reference=target['reference'], platform=target['platform'],
+                                    scanner=scanner, cataloged_at=stamp, sbom=value))
+            result.update(status='ok', sbom=cache, cataloged_at=stamp, cached=False)
+        except Exception as error:
+            result['error'] = type(error).__name__
+            problems.append(target['reference'] + ' [' + target['platform'] + ']: SBOM generation failed ('
+                            + type(error).__name__ + ')')
+    return images, problems
 
 
 def grype_environment(database):
@@ -224,46 +236,66 @@ def scan(images, root, work, environment, database):
     return problems
 
 
-def report_rows(nodes, images):
-    lookup = {(n['cluster'], n['name']): n.get('inventory', {}) for n in nodes}
+def report_associations(images):
+    return [dict(service, tags=[entry['reference']], image_id=entry['image']['id'], image_key=entry['key'],
+                 platform=entry['platform'], reference=entry['reference'],
+                 scan_status=entry.get('scan_status', 'failed'), scanned_at=entry.get('scanned_at', ''),
+                 cataloged_at=entry.get('cataloged_at', ''))
+            for entry in images for service in entry['services']]
+
+
+def finding_rows(entry):
     rows = []
-    for entry in images:
-        for location in entry['locations']:
-            containers = [c for c in lookup[(location['cluster'], location['node'])].get('containers', [])
-                          if c['image_id'] == entry['image']['id']]
-            associations = sorted({(c['service'] or '(standalone)', c['state']) for c in containers})
-            associations = associations or [('(local-only)', 'unused')]
-            matches = entry.get('findings', [])
-            for service, state in associations:
-                common = dict(location, service=service, state=state, image_id=entry['image']['id'],
-                              scan_status=entry.get('scan_status', 'failed'),
-                              scanned_at=entry.get('scanned_at', ''), cataloged_at=entry.get('cataloged_at', ''))
-                if not matches:
-                    rows.append(dict(common, severity='Unknown' if common['scan_status'] != 'ok' else 'None',
-                                     vulnerability='', package='', version='', fix=''))
-                for match in matches:
-                    vulnerability, artifact = match['vulnerability'], match['artifact']
-                    rows.append(dict(common, severity=vulnerability.get('severity') or 'Unknown',
-                                     vulnerability=vulnerability['id'], package=artifact['name'],
-                                     version=artifact.get('version', ''),
-                                     fix=', '.join(vulnerability.get('fix', {}).get('versions') or [])))
+    for match in entry.get('findings', []):
+        vulnerability, artifact = match['vulnerability'], match['artifact']
+        constraints = sorted({str(detail['found']['versionConstraint'])
+                              for detail in (match.get('matchDetails') or [])
+                              if isinstance(detail.get('found'), dict)
+                              and detail['found'].get('versionConstraint')})
+        rows.append(dict(severity=vulnerability.get('severity') or 'Unknown',
+                         vulnerability=vulnerability['id'], package=artifact['name'],
+                         version=artifact.get('version', ''), type=artifact.get('type', ''),
+                         purl=artifact.get('purl', ''), namespace=vulnerability.get('namespace', ''),
+                         aliases=sorted({v['id'] for v in (match.get('relatedVulnerabilities') or [])
+                                         if v.get('id') and v['id'] != vulnerability['id']}),
+                         affected='; '.join(constraints), advisory=vulnerability.get('dataSource', ''),
+                         fix=', '.join(vulnerability.get('fix', {}).get('versions') or [])))
     return rows
 
 
-def publish(root, summary, nodes, images):
-    rows = report_rows(nodes, images)
+def report_packages(images):
+    catalogs = {}
+    for entry in images:
+        key = entry.get('key', entry['image']['id'])
+        packages = None
+        if entry.get('sbom') and entry['status'] == 'ok':
+            value = read_json(entry['sbom'])['sbom']
+            # A searchable projection, not the full SBOM or arbitrary package metadata.
+            packages = [{field: artifact.get(field, '') for field in ('name', 'version', 'type', 'purl')}
+                        for artifact in value['artifacts']]
+        catalogs[key] = packages
+    return catalogs
+
+
+def publish(root, summary, images):
     summary['unique_matches'] = sum(len(i.get('findings', [])) for i in images)
     summary['sbom_cache_hits'] = sum(bool(i.get('cached')) for i in images)
-    summary['nodes_ok'] = sum(n['status'] == 'ok' for n in nodes)
+    associations = report_associations(images)
+    service_scans = {}
+    for association in associations:
+        service_scans.setdefault((association['cluster'], association['service']), []).append(association['scan_status'])
+    summary['services_total'] = len(service_scans)
+    summary['services_scanned'] = sum(all(status == 'ok' for status in statuses) for statuses in service_scans.values())
     summary['images_total'] = len(images)
     summary['images_scanned'] = sum(i.get('scan_status') == 'ok' for i in images)
     private = root / 'runs' / summary['run_id']
     atomic_json(private / 'summary.json', summary)
-    atomic_json(private / 'inventory.json', nodes)
     atomic_json(private / 'images.json', [{k: v for k, v in i.items() if k != 'sbom'} for i in images])
     # JSON embedded in HTML must never be able to terminate its script element.
-    data = json.dumps({'summary': summary, 'nodes': [{k: v for k, v in n.items() if k != 'inventory'} for n in nodes],
-                       'rows': rows}, separators=(',', ':')).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+    data = json.dumps({'summary': summary,
+                       'findings': {i['key']: finding_rows(i) for i in images},
+                       'associations': associations, 'packages': report_packages(images)},
+                      separators=(',', ':')).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
     template = Path(__file__).with_name('dashboard.html').read_text()
     def render(last_successful):
         return template.replace('AUDIT_LAST_SUCCESSFUL_URL', last_successful).replace('AUDIT_DATA_PLACEHOLDER', data)
@@ -308,52 +340,41 @@ def prune(root, days):
 
 def run(args):
     os.umask(0o077)
+    inventory = read_json(args.images)
+    targets = validate_inventory(inventory)
+    if args.clusters:
+        requested = set(args.clusters.split(','))
+        known = {service['cluster'] for target in targets for service in target['services']}
+        if requested - known:
+            raise ValueError('unknown cluster requested')
+        targets = [dict(target, services=[s for s in target['services'] if s['cluster'] in requested])
+                   for target in targets]
+        targets = [t for t in targets if t['services']]
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     root.chmod(0o755)
-    nodes = validate_nodes(read_json(args.targets))
-    if args.clusters:
-        requested = set(args.clusters.split(','))
-        if requested - {n['cluster'] for n in nodes}:
-            raise ValueError('unknown cluster requested')
-        nodes = [n for n in nodes if n['cluster'] in requested]
-    if args.nodes:
-        requested = set(args.nodes.split(','))
-        if requested - {n['name'] for n in nodes}:
-            raise ValueError('unknown node requested for selected clusters')
-        nodes = [n for n in nodes if n['name'] in requested]
-    # mkdir works across NFS clients; never silently steal an apparently stale lock.
     lock = root / '.run-lock'
     lock.mkdir()
     try:
         atomic_json(lock / 'owner.json', {'started_at': now(), 'pid': os.getpid()})
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
-        summary = {'run_id': stamp, 'started_at': now(), 'nodes_total': len(nodes), 'problems': []}
+        summary = {'run_id': stamp, 'started_at': now(), 'problems': [],
+                   'inventory_source': inventory.get('source', 'Supplied image inventory'),
+                   'inventory_observed_at': inventory.get('observed_at', '')}
         with tempfile.TemporaryDirectory(prefix='software-audit-') as directory:
             work = Path(directory)
-            # Docker secret stays outside the script's logs and SSH insists on mode 0600.
-            key = work / 'identity'
-            key.write_bytes(args.key.read_bytes())
-            key.chmod(0o600)
-            records, images, problems = collect(nodes, root, key, args.known_hosts,
-                                                inventory_only=args.inventory_only)
+            images, problems = collect(targets, root, work)
             summary['problems'].extend(problems)
-            if not args.inventory_only:
+            if any(image['status'] == 'ok' for image in images):
                 try:
                     environment, database = prepare_database(root, work)
                     summary['database'] = database
                     summary['problems'].extend(scan(images, root, work, environment, database))
                 except Exception as error:
                     summary['problems'].append('Database preparation failed (' + type(error).__name__ + ')')
-            else:
-                summary['problems'].append('Inventory-only diagnostic run; vulnerability assessment skipped')
-            for image in images:
-                for cache in (root / 'cache' / 'sboms' / (image['key'] + '.json'),):
-                    if cache.exists():
-                        cache.touch()
             summary['finished_at'] = now()
             summary['complete'] = not summary['problems']
-            publish(root, summary, records, images)
+            publish(root, summary, images)
             prune(root, args.retention_days)
             print(json.dumps(summary, indent=2))
             return 0 if summary['complete'] else 2
@@ -364,14 +385,10 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--targets', type=Path, required=True)
+    parser.add_argument('--images', type=Path, required=True, help='digest-pinned image/service inventory JSON')
     parser.add_argument('--root', type=Path, required=True)
-    parser.add_argument('--key', type=Path, required=True)
-    parser.add_argument('--known-hosts', type=Path, required=True)
     parser.add_argument('--clusters', default='')
-    parser.add_argument('--nodes', default='', help='optional comma-separated node names for a pilot run')
     parser.add_argument('--retention-days', type=int, default=30)
-    parser.add_argument('--inventory-only', action='store_true')
     args = parser.parse_args()
     if args.retention_days < 1:
         parser.error('retention must be at least one day')

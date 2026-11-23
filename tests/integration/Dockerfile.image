@@ -1,3 +1,0 @@
-FROM alpine:3.21.3
-ENV AUDIT_TEST_SECRET=must-never-appear-in-report
-LABEL com.docker.swarm.service.name=audit-test-service

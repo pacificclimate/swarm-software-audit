@@ -1,0 +1,13 @@
+{
+  "source": "Example deployment configuration; replace with your inventory",
+  "images": [
+    {
+      "reference": "registry.example.org/apps/web@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "platform": "linux/amd64",
+      "services": [
+        {"cluster": "live", "name": "web", "routing": "traefik", "state": "declared"},
+        {"cluster": "drac", "name": "web", "routing": "traefik", "state": "declared"}
+      ]
+    }
+  ]
+}

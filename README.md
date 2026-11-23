@@ -1,96 +1,73 @@
 # swarm-software-audit
 
-Docker Swarm software inventory and vulnerability assessment using Syft and Grype,
-with cached SBOMs and searchable static HTML reports.
-
-Restricted SSH helpers inventory each node's local images and containers. Syft
-catalogs uncached images from temporary archives on the source Swarm's storage.
-The central runner deduplicates SBOMs, updates Grype's database, scans and publishes
-HTML. Image layers are not transferred over SSH; the runner needs no Docker socket.
-
-## Prerequisites
-
-- Docker on the runner host; the published runner image targets `linux/amd64`.
-- Matching host helpers and the restricted `kestra-audit` account on each target.
-- Verified SSH host keys and a dedicated private key, mode 0600.
-- Writable output storage and outbound HTTPS for Grype database updates.
-
-The [deployment runbook](https://github.com/pacificclimate/portainer-deployment/blob/main/apps/live/kestra/software-audit.md)
-covers Ansible, Kestra, storage permissions and nginx. Read
-[architecture and helper security](docs/architecture.md) before provisioning
-privileged helpers. See [releases](docs/releases.md) for publishing and rebuilds.
-Production keys, site configuration and reports are excluded from this repository.
+Scan digest-pinned registry images with Syft and Grype, cache SBOMs and publish a
+searchable static dashboard. Python uses only its standard library.
 
 ## Run
 
-The image contains the `audit` account with UID:GID `1111:1111`. The output
-directory must be writable by that identity.
-
-Copy `examples/targets.json` to `config/targets.json` and replace the example hosts.
-Put verified host keys in `config/known_hosts` and the private key in
-`config/id_ed25519`.
+Build the registry runner and prepare an image inventory:
 
 ```bash
-mkdir -p audit-output
-docker run --rm --user 1111:1111 \
+docker build -t pcic/swarm-software-audit:local .
+mkdir -p config audit-output
+cp examples/images.json config/images.json
+```
+
+Replace the example reference with a real `registry/repository@sha256:digest` and
+set its platform. List associated services with cluster, name and routing:
+`traefik`, `published-ports`, `none` or `unknown`. State defaults to `declared`;
+use `running` only for an observed deployment snapshot. Combine services sharing
+one reference/platform into one entry. The example digest is a placeholder.
+
+The image runs as UID:GID `1111:1111`; provision the output directory writable by
+that identity. For another storage identity, build with `AUDIT_UID` / `AUDIT_GID`.
+
+```bash
+docker run --rm --read-only --tmpfs /tmp:rw,nosuid,size=2g \
   --mount "type=bind,source=$PWD/config,target=/config,readonly" \
   --mount "type=bind,source=$PWD/audit-output,target=/audit" \
-  pcic/swarm-software-audit:0.1.2 \
-  --targets /config/targets.json --known-hosts /config/known_hosts \
-  --key /config/id_ed25519 --root /audit
+  pcic/swarm-software-audit:local \
+  --images /config/images.json --root /audit
 ```
 
-Optional arguments:
+Optional: `--clusters live,drac` selects service associations;
+`--retention-days 30` controls history and unused-cache retention.
+For private images, mount a Docker authentication `config.json` file with registry
+download credentials read-only and set `DOCKER_CONFIG` to its directory.
+See [registry authentication](https://oss.anchore.com/docs/guides/private-registries/).
 
-- `--clusters primary,secondary`: select clusters.
-- `--nodes node-a,node-b`: select nodes for a pilot.
-- `--inventory-only`: collect metadata without Syft or Grype; exits 2.
-- `--retention-days 30`: retain run history and unused cache objects for 30 days.
-
-## Output and exit status
+## Reports
 
 Serve only `audit-output/published/`. `index.html` shows the latest attempt;
-`last-successful.html` preserves the latest complete assessment. Raw `cache/` and
-`runs/` directories are private and must not be served.
+`last-successful.html` preserves the latest complete assessment. Keep raw `cache/`
+and `runs/` private. Reports contain software inventory and vulnerability details.
 
-A complete assessment exits 0. Missing coverage, failed scans, stale/unavailable
-databases and empty package catalogs produce an incomplete assessment and exit 2
-after publishing status. Operational exceptions exit nonzero. Incomplete results
-are not treated as clean scans.
+Vulnerabilities and Packages (SBOM) tabs group by package/version or image, with
+expandable advisories and service locations. Filters focus on Traefik-configured
+services and can include non-Traefik or unknown routing. Service state and routing
+filters use the supplied inventory.
 
-## Tests
+A complete assessment exits 0. An unavailable image, failed scan, unusable database
+or empty package catalog makes the assessment incomplete and exits 2 after reporting.
+The assessment covers packages inside the listed registry images, matched against
+Grype's vulnerability database.
 
-Python 3.13 is used in the runner; unit tests use the standard library.
-
-```bash
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-docker build -t pcic/swarm-software-audit:local .
-docker run --rm pcic/swarm-software-audit:local --help
-```
-
-Optional integration tests use disposable containers on the local Docker daemon:
+## Development
 
 ```bash
-docker pull anchore/syft:v1.57.2
-docker build -t swarm-software-audit-test-host:local -f tests/integration/Dockerfile.host .
-docker build -t swarm-software-audit-test-image:local -f tests/integration/Dockerfile.image .
-python3 tests/integration/local_test.py
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-The harness refuses remote daemons, removes its containers/network, and writes
-`tests/integration/preview.html` (gitignored). Only the disposable host receives
-the Docker socket. It creates no host accounts and uses no production credentials.
-Grype needs HTTPS. Optional browser checks use
-`python3 tests/integration/browser_test.py --browser /path/to/chromium`.
+Optional registry smoke test, with `syft` on PATH:
 
-## Limitations
+```bash
+python3 tests/integration/registry_test.py --reference registry.example.org/app@sha256:REPLACE_ME
+```
 
-Coverage includes local Docker images, including undeployed images, and their
-current container/service associations. Host packages, BuildKit cache blobs,
-mounted data, writable-layer changes, desired service specs and zero-replica
-services are outside scope. Findings do not establish exploitability.
-Collection is sequential; target inventory must match cluster membership.
-See [recovery](docs/architecture.md#recovery) for interrupted runs.
+Browser checks use an existing Chromium installation and a generated report:
+`python3 tests/integration/browser_test.py --browser /path/to/chromium --report /path/to/index.html`.
+See [architecture](docs/architecture.md), [releases](docs/releases.md), and
+[deployment migration handoff](docs/deployment-handoff.md).
 
 ## License
 

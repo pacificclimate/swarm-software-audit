@@ -230,3 +230,5 @@ __marimo__/
 /tests/integration/preview.html
 *.key
 /config/
+/images.json
+/registry-auth/
