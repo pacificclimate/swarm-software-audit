@@ -4,8 +4,10 @@ The input is an inventory of immutable registry image references and platform,
 optionally associated with services. Syft explicitly uses its registry source,
 which verifies registry content by digest, with TLS verification enabled.
 
-The runner bundles Syft and Grype, uses standard-library Python, and runs as the
-non-root `audit` account. It downloads images from registries and vulnerability
+The scanner uses standard-library Python and runs as the non-root `audit` account.
+The image bundles Syft, Grype and PyYAML for deployment inventory collectors.
+PyYAML is installed during the image build from version- and hash-pinned wheels
+in `requirements.txt`. It downloads images from registries and vulnerability
 data from Grype's database service. It writes reports and caches under the path
 passed to `--root` (`/audit` in the container examples).
 
@@ -28,8 +30,12 @@ reason; no registry manifest digest is invented.
 Service metadata comes from the supplied inventory.
 Use `source` and optionally `observed_at` to identify its origin. Deployment files
 establish declared state; only an observed inventory should label a service running.
-Deployment collectors supply observed image references and service metadata;
-collection is separate from the registry scanner.
+`inventory.py` queries Prometheus/cAdvisor and annotates observations from Compose
+deploy labels. Collector configuration supplies the endpoint, expected instances,
+source directories and platform; site addresses are kept outside the image.
+Freshness and coverage are checked before scanning. HTTP endpoints rely on trusted
+network transport; HTTPS uses the system certificate trust store.
+Literal service prefixes restrict scope without evaluating user-supplied regexes.
 
 Routing categories describe Traefik configuration, direct published ports, no
 observed route, or unknown, according to the supplied inventory. Vulnerability
@@ -62,6 +68,9 @@ last complete page. Only `published/` is intended to be served. Keep reports int
 The scanner can run from reviewed CI, a host-managed schedule, or a restricted
 Kestra flow. Deployment administrators control flow-edit permissions, runtime
 users and permitted mounts. Limit writable mounts to the audit output directory.
+
+The runtime UID owns the audit root and private `tmp/`, `cache/` and `runs/`
+directories. Private directories are set to mode 0700 before scanning.
 
 Runs are serialized using `.run-lock/`. After an abrupt termination, confirm no
 runner remains before removing that specific stale lock. Retention removes recognized audit

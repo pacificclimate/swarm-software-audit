@@ -1,7 +1,8 @@
 # swarm-software-audit
 
 Scan digest-pinned registry images with Syft and Grype, cache SBOMs and publish a
-searchable static dashboard. Python uses only its standard library.
+searchable static dashboard. The runner bundles Syft, Grype and PyYAML for
+deployment inventory collectors.
 
 ## Run
 
@@ -42,6 +43,15 @@ For private images, mount a Docker authentication `config.json` file with regist
 download credentials read-only and set `DOCKER_CONFIG` to its directory.
 See [registry authentication](https://oss.anchore.com/docs/guides/private-registries/).
 
+## Inventory collection
+
+The runner includes a Prometheus/cAdvisor collector. Configure its endpoint,
+expected instances and Compose sources using [the example](examples/prometheus.json).
+Mount the configuration and Compose tree read-only, then invoke
+`python /opt/swarm-software-audit/inventory.py --config /config/prometheus.json`.
+`--clusters` and `--service-prefix` restrict scope; `--kestra` emits structured
+output for a Kestra flow. Routing annotations are regenerated from Compose files.
+
 ## Reports
 
 Serve only `audit-output/published/`. `index.html` shows the latest attempt;
@@ -62,7 +72,8 @@ Grype's vulnerability database.
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_*.py'
+python3.13 -m pip install --require-hashes --only-binary=:all: -r requirements.txt
+python3.13 -m unittest discover -s tests -p 'test_*.py'
 ```
 
 Optional registry smoke test, with `syft` on PATH:

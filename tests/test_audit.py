@@ -216,6 +216,34 @@ class ReportTests(unittest.TestCase):
             snapshot = (root / 'published/runs/20261123T000001Z-bbbbbbbb/index.html').read_text()
             self.assertIn('../../last-successful.html', snapshot)
 
+    def test_inventory_source_and_coverage_warnings_are_html_safe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = '</script><img src=x onerror="window.auditXss=1">&'
+            summary = dict(run_id='20261124T000000Z-aaaaaaaa', complete=False,
+                           problems=[], coverage_warnings=[payload], inventory_source=payload)
+            audit.publish(root, summary, [self.fixture(root)])
+            page = (root / 'published/index.html').read_text()
+            self.assertNotIn(payload, page)
+            self.assertNotIn('<img src=x', page)
+            data = json.loads(page.split('<script id="audit-data" type="application/json">')[1].split('</script>')[0])
+            self.assertEqual(data['summary']['inventory_source'], payload)
+            self.assertEqual(data['summary']['coverage_warnings'], [payload])
+
+    def test_private_storage_modes_and_owner_are_enforced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'audit'
+            root.mkdir()
+            for name in ('tmp', 'cache', 'runs'):
+                (root / name).mkdir(mode=0o755)
+            audit.prepare_storage(root)
+            self.assertEqual(root.stat().st_mode & 0o777, 0o755)
+            self.assertTrue(all((root / name).stat().st_mode & 0o777 == 0o700
+                                for name in ('tmp', 'cache', 'runs')))
+            other_uid = os.getuid() + 1
+            with patch.object(audit.os, 'getuid', return_value=other_uid), self.assertRaisesRegex(ValueError, 'owned by'):
+                audit.prepare_storage(root)
+
     def test_empty_package_catalog_is_not_clean(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); sbom = root / 'sbom.json'

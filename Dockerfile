@@ -3,6 +3,9 @@ FROM anchore/syft@sha256:e97e20b6e6d1699c60296b66ab337941724f9bd06ac279d893eda89
 FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt /opt/swarm-software-audit/requirements.txt
+RUN python -m pip install --disable-pip-version-check --no-cache-dir \
+    --require-hashes --only-binary=:all: -r /opt/swarm-software-audit/requirements.txt
 ARG AUDIT_UID=1111
 ARG AUDIT_GID=1111
 RUN groupadd --gid "${AUDIT_GID}" audit \
@@ -10,7 +13,7 @@ RUN groupadd --gid "${AUDIT_GID}" audit \
        --no-create-home --home-dir /tmp --shell /usr/sbin/nologin audit
 COPY --from=grype /grype /usr/local/bin/grype
 COPY --from=syft /syft /usr/local/bin/syft
-COPY audit.py dashboard.html /opt/swarm-software-audit/
+COPY audit.py inventory.py dashboard.html /opt/swarm-software-audit/
 COPY LICENSE /usr/share/doc/swarm-software-audit/LICENSE
 ARG VERSION=development
 LABEL org.opencontainers.image.source="https://github.com/pacificclimate/swarm-software-audit" \

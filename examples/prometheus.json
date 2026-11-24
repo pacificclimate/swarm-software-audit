@@ -1,0 +1,19 @@
+{
+  "prometheus_url": "https://prometheus.example.org",
+  "compose_root": "/deployment/apps",
+  "platform": "linux/amd64",
+  "max_sample_age_seconds": 300,
+  "clusters": {
+    "production": {
+      "instances": [
+        "node01.example.org:43927"
+      ],
+      "compose_sources": [
+        {
+          "directory": "live",
+          "stack_prefix": "live-"
+        }
+      ]
+    }
+  }
+}

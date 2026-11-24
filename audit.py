@@ -357,6 +357,19 @@ def prune(root, days):
                     child.unlink()
 
 
+def prepare_storage(root):
+    root.mkdir(parents=True, exist_ok=True)
+    if root.stat().st_uid != os.getuid():
+        raise ValueError('Audit directory must be owned by the runtime UID')
+    root.chmod(0o755)
+    for name in ('tmp', 'cache', 'runs'):
+        private = root / name
+        private.mkdir(mode=0o700, exist_ok=True)
+        if private.stat().st_uid != os.getuid():
+            raise ValueError('Private audit directories must be owned by the runtime UID')
+        private.chmod(0o700)
+
+
 def run(args):
     os.umask(0o077)
     inventory = read_json(args.images)
@@ -370,8 +383,7 @@ def run(args):
                    for target in targets]
         targets = [t for t in targets if t['services']]
     root = args.root.resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    root.chmod(0o755)
+    prepare_storage(root)
     lock = root / '.run-lock'
     lock.mkdir()
     try:

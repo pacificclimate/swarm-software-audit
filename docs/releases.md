@@ -11,7 +11,7 @@ Update [release notes](../CHANGELOG.md), commit the changes, then create an
 annotated version tag and push the branch and tag together:
 
 ```bash
-git tag -a 0.2.1 -m "0.2.1"
+git tag -a 0.2.2 -m "0.2.2"
 git push origin main --follow-tags
 ```
 
@@ -22,7 +22,7 @@ needs a new version; do not move published tags.
 To rebuild the same source version for OS package updates:
 
 ```bash
-gh workflow run docker-publish.yml --ref 0.2.1
+gh workflow run docker-publish.yml --ref 0.2.2
 ```
 
 Manual dispatch disables the build cache; base images remain digest-pinned.

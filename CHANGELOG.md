@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.2.2
+
+- Package the Prometheus/cAdvisor collector and automatic Compose routing annotations in the runner.
+- Keep site-specific endpoints, instances and source directories in deployment configuration.
+- Validate literal service prefixes and handle null Compose network declarations.
+- Enforce private audit storage ownership and directory modes.
+
+- Bundle PyYAML in the runner using hash-verified wheels installed during the image build.
+- Support Compose inventory collectors without runtime package downloads.
+
 ## 0.2.1
 
 - Report images without deployed digests as unassessed without resolving mutable tags.
