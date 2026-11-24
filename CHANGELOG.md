@@ -1,5 +1,9 @@
 # Release notes
 
+## 0.2.3
+
+- Fix workflow YAML parsing by quoting the dependency installation command.
+
 ## 0.2.2
 
 - Package the Prometheus/cAdvisor collector and automatic Compose routing annotations in the runner.
