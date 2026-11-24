@@ -19,11 +19,17 @@ registry and a full SHA256 digest. An OCI index
 reference is assessed for the explicitly selected platform, default `linux/amd64`.
 The SBOM records the input reference and platform alongside Syft's configuration ID.
 
+An optional `unassessed` list records fully qualified tag-only references, platform,
+services and `reason: missing-digest`. These observations do not reach Syft, Grype
+or the registry. Their presence produces coverage warnings and exit 0, but keeps
+the assessment incomplete while pinned images are still scanned. The report retains their service associations and missing-digest
+reason; no registry manifest digest is invented.
+
 Service metadata comes from the supplied inventory.
 Use `source` and optionally `observed_at` to identify its origin. Deployment files
 establish declared state; only an observed inventory should label a service running.
-A Portainer exporter remains deployment integration work; it would generate this
-file using selected image and service fields.
+Deployment collectors supply observed image references and service metadata;
+collection is separate from the registry scanner.
 
 Routing categories describe Traefik configuration, direct published ports, no
 observed route, or unknown, according to the supplied inventory. Vulnerability
@@ -60,5 +66,3 @@ users and permitted mounts. Limit writable mounts to the audit output directory.
 Runs are serialized using `.run-lock/`. After an abrupt termination, confirm no
 runner remains before removing that specific stale lock. Retention removes recognized audit
 history directories and unused cache objects.
-
-See the [deployment handoff](deployment-handoff.md) for migration tasks.

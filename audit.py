@@ -50,13 +50,21 @@ REFERENCE = re.compile(r'(?P<registry>[a-z0-9][a-z0-9.-]*(?::[0-9]+)?)/'
                        r'@sha256:[0-9a-f]{64}\Z')
 
 
+UNPINNED_REFERENCE = re.compile(REFERENCE.pattern.replace(r'@sha256:[0-9a-f]{64}', ''))
+
+
 def validate_inventory(config):
     targets, seen = [], set()
-    for entry in config['images']:
+    entries = [(entry, False) for entry in config.get('images', [])]
+    entries.extend((entry, True) for entry in config.get('unassessed', []))
+    for entry, unassessed in entries:
         reference, platform = entry['reference'], entry.get('platform', 'linux/amd64')
-        match = REFERENCE.fullmatch(reference) if isinstance(reference, str) else None
+        policy = UNPINNED_REFERENCE if unassessed else REFERENCE
+        match = policy.fullmatch(reference) if isinstance(reference, str) else None
         if not match or not any(c in match['registry'] for c in '.:') and match['registry'] != 'localhost':
-            raise ValueError('expected a fully qualified registry image pinned by sha256 digest')
+            raise ValueError('expected a fully qualified registry image; scanned images require a sha256 digest')
+        if unassessed and entry.get('reason') != 'missing-digest':
+            raise ValueError('unassessed images require reason missing-digest')
         if not isinstance(platform, str) or not PLATFORM.fullmatch(platform):
             raise ValueError('invalid image platform')
         if (reference, platform) in seen:
@@ -73,7 +81,10 @@ def validate_inventory(config):
                 raise ValueError('invalid service state or routing')
             selected.append(dict(cluster=service['cluster'], service=service['name'], state=state,
                                  routing=ROUTING[routing]))
-        targets.append(dict(reference=reference, platform=platform, services=selected))
+        target = dict(reference=reference, platform=platform, services=selected)
+        if unassessed:
+            target['unassessed_reason'] = 'No scan — no deployed digest'
+        targets.append(target)
     if not targets:
         raise ValueError('no registry images configured')
     return targets
@@ -115,17 +126,24 @@ def registry_sbom(target, work):
 def collect(targets, root, work, catalog=registry_sbom):
     images, problems = [], []
     try:
-        version = json.loads(subprocess.check_output(['syft', 'version', '-o', 'json'], timeout=30))
+        version = (json.loads(subprocess.check_output(['syft', 'version', '-o', 'json'], timeout=30))
+                   if any('unassessed_reason' not in target for target in targets) else {})
         scanner = {'syft': version, 'scope': 'squashed', 'profile': 'registry-v1'}
         scanner_error = None
     except Exception as error:
         scanner, scanner_error = {}, type(error).__name__
     for target in targets:
         key = digest(dict(reference=target['reference'], platform=target['platform'], scanner=scanner))
-        result = dict(key=key, image={'id': target['reference'].split('@')[1]},
+        identity = (target['reference'].split('@', 1)[1] if '@' in target['reference']
+                    else 'unassessed:' + digest(dict(reference=target['reference'], platform=target['platform'])))
+        result = dict(key=key, image={'id': identity},
                       reference=target['reference'], platform=target['platform'], scanner=scanner,
                       services=target['services'], status='failed')
         images.append(result)
+        if 'unassessed_reason' in target:
+            result.update(scan_status='unassessed', error=target['unassessed_reason'])
+            problems.append(target['reference'] + ': ' + target['unassessed_reason'])
+            continue
         if scanner_error:
             problems.append(target['reference'] + ': Syft unavailable (' + scanner_error + ')')
             continue
@@ -239,7 +257,8 @@ def scan(images, root, work, environment, database):
 def report_associations(images):
     return [dict(service, tags=[entry['reference']], image_id=entry['image']['id'], image_key=entry['key'],
                  platform=entry['platform'], reference=entry['reference'],
-                 scan_status=entry.get('scan_status', 'failed'), scanned_at=entry.get('scanned_at', ''),
+                 scan_status=entry.get('scan_status', 'failed'), scan_error=entry.get('error', ''),
+                 scanned_at=entry.get('scanned_at', ''),
                  cataloged_at=entry.get('cataloged_at', ''))
             for entry in images for service in entry['services']]
 
@@ -364,7 +383,10 @@ def run(args):
         with tempfile.TemporaryDirectory(prefix='software-audit-') as directory:
             work = Path(directory)
             images, problems = collect(targets, root, work)
-            summary['problems'].extend(problems)
+            warnings = {image['reference'] + ': ' + image['error'] for image in images
+                        if image.get('scan_status') == 'unassessed'}
+            summary['coverage_warnings'] = sorted(warnings)
+            summary['problems'].extend(problem for problem in problems if problem not in warnings)
             if any(image['status'] == 'ok' for image in images):
                 try:
                     environment, database = prepare_database(root, work)
@@ -373,11 +395,11 @@ def run(args):
                 except Exception as error:
                     summary['problems'].append('Database preparation failed (' + type(error).__name__ + ')')
             summary['finished_at'] = now()
-            summary['complete'] = not summary['problems']
+            summary['complete'] = not summary['problems'] and not summary['coverage_warnings']
             publish(root, summary, images)
             prune(root, args.retention_days)
             print(json.dumps(summary, indent=2))
-            return 0 if summary['complete'] else 2
+            return 0 if not summary['problems'] else 2
     finally:
         (lock / 'owner.json').unlink(missing_ok=True)
         lock.rmdir()

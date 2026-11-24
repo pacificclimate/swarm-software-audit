@@ -252,5 +252,71 @@ class ReportTests(unittest.TestCase):
             self.assertFalse(args.root.exists())
 
 
+
+class UnassessedTests(unittest.TestCase):
+    def source(self, with_pinned=True):
+        value = inventory() if with_pinned else {'images': []}
+        value['unassessed'] = [{'reference': 'docker.io/portainer/agent:lts',
+            'platform': 'linux/amd64', 'reason': 'missing-digest',
+            'services': [{'cluster': 'drac', 'name': 'portainer_edge_agent'}]}]
+        return value
+
+    def test_only_explicit_valid_unassessed_observations_are_allowed(self):
+        value = self.source()
+        self.assertEqual(len(audit.validate_inventory(value)), 2)
+        for field, bad in [('reason', 'ignored'), ('reference', 'docker.io/portainer/agent@' + ID),
+                           ('reference', 'portainer/agent:lts')]:
+            source = copy.deepcopy(value)
+            source['unassessed'][0][field] = bad
+            with self.subTest(field=field, value=bad), self.assertRaises(ValueError):
+                audit.validate_inventory(source)
+
+    def test_only_pinned_images_reach_catalog(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(audit.subprocess, 'check_output', return_value=VERSION):
+            root = Path(directory)
+            with patch.object(audit, 'registry_sbom') as unused:
+                calls = []
+                def catalog(target, work):
+                    calls.append(target['reference'])
+                    return copy.deepcopy(SBOM)
+                images, problems = audit.collect(audit.validate_inventory(self.source()), root, root, catalog)
+            self.assertEqual(calls, [REFERENCE])
+            self.assertEqual(images[1]['scan_status'], 'unassessed')
+            self.assertEqual(len(problems), 1)
+            self.assertTrue(images[1]['image']['id'].startswith('unassessed:'))
+
+    def test_unassessed_only_run_calls_no_scanners_and_preserves_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'output'
+            (output / 'published').mkdir(parents=True)
+            successful = output / 'published/last-successful.html'
+            successful.write_text('previous successful report')
+            audit.atomic_json(root / 'images.json', self.source(False))
+            args = SimpleNamespace(images=root / 'images.json', root=output, clusters='', retention_days=30)
+            previous = os.umask(0o022)
+            try:
+                with patch.object(audit.subprocess, 'check_output') as execute, \
+                     patch.object(audit, 'registry_sbom') as catalog, \
+                     patch.object(audit, 'prepare_database') as database, \
+                     patch.object(audit, 'scan') as scan, patch('sys.stdout', io.StringIO()):
+                    self.assertEqual(audit.run(args), 0)
+                execute.assert_not_called(); catalog.assert_not_called()
+                database.assert_not_called(); scan.assert_not_called()
+            finally:
+                os.umask(previous)
+            self.assertEqual(successful.read_text(), 'previous successful report')
+            page = (output / 'published/index.html').read_text()
+            data = json.loads(page.split('<script id="audit-data" type="application/json">')[1].split('</script>')[0])
+            self.assertIn('No scan — no deployed digest', str(data))
+            self.assertFalse(data['summary']['complete'])
+            self.assertEqual(data['summary']['images_total'], 1)
+            self.assertEqual(data['summary']['images_scanned'], 0)
+            self.assertEqual(data['summary']['services_scanned'], 0)
+            self.assertIsNone(next(iter(data['packages'].values())))
+            self.assertEqual(data['associations'][0]['scan_status'], 'unassessed')
+            self.assertEqual(data['summary']['problems'], [])
+            self.assertEqual(len(data['summary']['coverage_warnings']), 1)
+
 if __name__ == '__main__':
     unittest.main()

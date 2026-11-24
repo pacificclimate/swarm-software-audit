@@ -47,6 +47,9 @@ text('span', ` · ${s.images_scanned}/${s.images_total} images assessed`, el('st
 if (s.problems.length) detail(el('status'), `${s.problems.length} collection / scan issues`, node => {
     for (const problem of s.problems) text('p', problem, node);
 });
+if (s.coverage_warnings?.length) detail(el('status'), `${s.coverage_warnings.length} images unassessed`, node => {
+    for (const warning of s.coverage_warnings) text('p', warning, node);
+});
 for (const [value,label] of [[`${s.services_scanned}/${s.services_total}`,'Services assessed'],
     [`${s.images_scanned}/${s.images_total}`,'Images assessed'],[s.unique_matches,'Scanner matches'],[s.sbom_cache_hits,'SBOM cache hits']]) {
     const card = document.createElement('div'); card.className = 'card';
@@ -89,7 +92,8 @@ function groupedRows() {
         const contexts = allContexts.filter(matchesContext);
         if (!contexts.length) continue;
         let records = packages ? data.packages[imageKey] : data.findings[imageKey];
-        if (!records?.length) records = [{coverage:true, name:packages
+        if (!records?.length) records = [{coverage:true, name:contexts[0].scan_status === 'unassessed'
+            ? contexts[0].scan_error : packages
             ? (records ? 'No packages cataloged' : 'SBOM unavailable')
             : (contexts[0].scan_status === 'ok' ? 'No vulnerability matches' : 'Assessment unavailable'),
             severity:contexts[0].scan_status === 'ok' ? 'None' : 'Unknown'}];

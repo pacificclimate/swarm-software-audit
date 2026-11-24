@@ -11,18 +11,18 @@ Update [release notes](../CHANGELOG.md), commit the changes, then create an
 annotated version tag and push the branch and tag together:
 
 ```bash
-git tag -a 0.2.0 -m "0.2.0"
+git tag -a 0.2.1 -m "0.2.1"
 git push origin main --follow-tags
 ```
 
-The operator handles commits, tags and pushes. Wait for the versioned publishing
-run to pass, then pin its image digest in deployment configuration. Changed source
+Wait for the versioned publishing run to pass, then pin its image digest in
+deployment configuration. Changed source
 needs a new version; do not move published tags.
 
 To rebuild the same source version for OS package updates:
 
 ```bash
-gh workflow run docker-publish.yml --ref 0.2.0
+gh workflow run docker-publish.yml --ref 0.2.1
 ```
 
 Manual dispatch disables the build cache; base images remain digest-pinned.

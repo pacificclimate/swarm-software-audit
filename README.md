@@ -19,6 +19,12 @@ set its platform. List associated services with cluster, name and routing:
 use `running` only for an observed deployment snapshot. Combine services sharing
 one reference/platform into one entry. The example digest is a placeholder.
 
+List tag-only observations separately in `unassessed`, using the same platform and
+service fields plus `"reason": "missing-digest"`. These entries are never downloaded
+or scanned; both tabs show “No scan — no deployed digest”. Missing digests are
+coverage warnings and exit 0, but keep the assessment incomplete and preserve
+the previous fully assessed report.
+
 The image runs as UID:GID `1111:1111`; provision the output directory writable by
 that identity. For another storage identity, build with `AUDIT_UID` / `AUDIT_GID`.
 
@@ -47,8 +53,9 @@ expandable advisories and service locations. Filters focus on Traefik-configured
 services and can include non-Traefik or unknown routing. Service state and routing
 filters use the supplied inventory.
 
-A complete assessment exits 0. An unavailable image, failed scan, unusable database
-or empty package catalog makes the assessment incomplete and exits 2 after reporting.
+A successful execution exits 0, including runs with missing-digest coverage warnings.
+An unavailable pinned image, failed scan, unusable database or empty package catalog
+exits 2 after reporting. Incomplete coverage preserves the last complete report.
 The assessment covers packages inside the listed registry images, matched against
 Grype's vulnerability database.
 
@@ -66,8 +73,7 @@ python3 tests/integration/registry_test.py --reference registry.example.org/app@
 
 Browser checks use an existing Chromium installation and a generated report:
 `python3 tests/integration/browser_test.py --browser /path/to/chromium --report /path/to/index.html`.
-See [architecture](docs/architecture.md), [releases](docs/releases.md), and
-[deployment migration handoff](docs/deployment-handoff.md).
+See [architecture](docs/architecture.md) and [releases](docs/releases.md).
 
 ## License
 

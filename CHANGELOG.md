@@ -1,5 +1,12 @@
 # Release notes
 
+## 0.2.1
+
+- Report images without deployed digests as unassessed without resolving mutable tags.
+- Continue scanning pinned images, mark coverage incomplete, and preserve the last successful report.
+- Missing digests are coverage warnings (exit 0); collection and scan failures still exit 2.
+- Show the missing-digest reason in both dashboard tabs.
+
 ## 0.2.0
 
 - Replace node SSH collection with Syft registry scanning of digest-pinned images
